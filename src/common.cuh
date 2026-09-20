@@ -13,33 +13,28 @@
     } while (0)
 
 /* Allocate dynamically a 1D-array of size n and returns it. */
-template <typename T>
-T* alloc_host(size_t n) {
-    return new T[n];
+inline float* alloc_host(size_t n) {
+    return new float[n];
 }
 
 /* Fill the 1D array of size n by numbers from 0 to n-1. */
-template <typename T>
-void fill(T* h_ptr, size_t n) {
+inline void fill(float* h_ptr, size_t n) {
     for (size_t i = 0; i < n; i++) {
         h_ptr[i] = i;
     }
 }
 
 /* CUDA allocates a 1D-array of size n and returns it. */
-template <typename T>
-T* alloc_device(size_t n) {
-    T* d_ptr;
-    CUDA_CHECK(cudaMalloc((void**) &d_ptr, n * sizeof(T)));
+inline float* alloc_device(size_t n) {
+    float* d_ptr;
+    CUDA_CHECK(cudaMalloc((void**) &d_ptr, n * sizeof(float)));
     return d_ptr;
 }
 
-template <typename T>
-void copy_to_device(T* d_ptr, T* h_ptr, size_t n) {
-    CUDA_CHECK(cudaMemcpy(d_ptr, h_ptr, n * sizeof(T), cudaMemcpyHostToDevice));
+inline void copy_to_device(float* d_ptr, float* h_ptr, size_t n) {
+    CUDA_CHECK(cudaMemcpy(d_ptr, h_ptr, n * sizeof(float), cudaMemcpyHostToDevice));
 }
 
-template <typename T>
-void copy_to_host(T* h_ptr, T* d_ptr, size_t n) {
-    CUDA_CHECK(cudaMemcpy(h_ptr, d_ptr, n * sizeof(T), cudaMemcpyDeviceToHost));
+inline void copy_to_host(float* h_ptr, float* d_ptr, size_t n) {
+    CUDA_CHECK(cudaMemcpy(h_ptr, d_ptr, n * sizeof(float), cudaMemcpyDeviceToHost));
 }
