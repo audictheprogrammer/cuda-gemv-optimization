@@ -3,7 +3,8 @@
 
 /* gemv_reduction_kernel.
 One warp (32 threads) computes one full dot product (one row of A times x).
-Step 1: Each thread accumulates a partial sum in its own register (sum).
+Step 1: Each thread accumulates a partial sum in its own register (sum),
+        striding across the row by 32.
 Step 2: Sums the 32 partial sums into one. Uses __shfl_down_sync to read other thread's registers.
 Step 3: Lane 0 holds the final result and writes in y[warp_id].
 */

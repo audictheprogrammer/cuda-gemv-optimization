@@ -61,9 +61,12 @@ int main () {
     int warps_per_block = block_size / 32;
     int grid_size_reduction = (n + warps_per_block - 1) / warps_per_block;
 
-    run_and_benchmark("Naive",     gemv_naive_kernel,     d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size, block_size);
-    run_and_benchmark("Coalesced", gemv_coalesced_kernel, d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size, block_size);
-    run_and_benchmark("Reduction", gemv_reduction_kernel, d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size_reduction , block_size);
+    int grid_size_shared = n;
+
+    run_and_benchmark("Naive",     gemv_naive_kernel,     d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size,           block_size);
+    run_and_benchmark("Coalesced", gemv_coalesced_kernel, d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size,           block_size);
+    run_and_benchmark("Shared",    gemv_shared_kernel,    d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size_shared,    block_size);
+    run_and_benchmark("Reduction", gemv_reduction_kernel, d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size_reduction, block_size);
 
     delete[] h_x;
     delete[] h_y;
