@@ -2,7 +2,7 @@
 #include "../include/gemv.cuh"
 #include <iostream>
 #include <string>
-
+#include <vector>
 
 void run_and_benchmark(const char* name,
                         void (*kernel)(const float*, const float*, float*, size_t),
@@ -36,45 +36,38 @@ void run_and_benchmark(const char* name,
     cudaEventDestroy(stop);
 }
 
-int main () {
-    const int n = 1024;
-
-    float* h_A = alloc_host(n*n);
-    float* h_x = alloc_host(n);
-    float* h_y = alloc_host(n);
-
-    float* d_A = alloc_device(n*n);
-    float* d_x = alloc_device(n);
-    float* d_y = alloc_device(n);
-
-    fill(h_A, n*n);
-    fill(h_x, n);
-
-    copy_to_device(d_A, h_A, n*n);
-    copy_to_device(d_x, h_x, n);
-
+int main() {
+    std::vector<int> sizes = {1024, 2048, 4096, 8192};
     int block_size = 256;
-    int grid_size = (n + block_size - 1) / block_size;
 
-    // gemv_reduction_kernel assigns one warp (32 threads) per row, so we need
-    // exactly n warps in total, rounded up to the nearest block.
-    int warps_per_block = block_size / 32;
-    int grid_size_reduction = (n + warps_per_block - 1) / warps_per_block;
+    for (int n : sizes) {
+        std::cout << "\n=== n = " << n << " ===" << std::endl;
 
-    int grid_size_shared = n;
+        float* h_A = alloc_host(n*n);
+        float* h_x = alloc_host(n);
+        float* h_y = alloc_host(n);
+        float* d_A = alloc_device(n*n);
+        float* d_x = alloc_device(n);
+        float* d_y = alloc_device(n);
 
-    run_and_benchmark("Naive",     gemv_naive_kernel,     d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size,           block_size);
-    run_and_benchmark("Coalesced", gemv_coalesced_kernel, d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size,           block_size);
-    run_and_benchmark("Shared",    gemv_shared_kernel,    d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size_shared,    block_size);
-    run_and_benchmark("Reduction", gemv_reduction_kernel, d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size_reduction, block_size);
+        fill(h_A, n*n);
+        fill(h_x, n);
+        copy_to_device(d_A, h_A, n*n);
+        copy_to_device(d_x, h_x, n);
 
-    delete[] h_x;
-    delete[] h_y;
-    delete[] h_A;
+        int grid_size = (n + block_size - 1) / block_size;
+        int warps_per_block = block_size / 32;
+        int grid_size_reduction = (n + warps_per_block - 1) / warps_per_block;
+        int grid_size_shared = n;
 
-    cudaFree(d_A);
-    cudaFree(d_x);
-    cudaFree(d_y);
+        run_and_benchmark("Naive",     gemv_naive_kernel,     d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size,           block_size);
+        run_and_benchmark("Coalesced", gemv_coalesced_kernel, d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size,           block_size);
+        run_and_benchmark("Shared",    gemv_shared_kernel,    d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size_shared,    block_size);
+        run_and_benchmark("Reduction", gemv_reduction_kernel, d_A, d_x, d_y, h_A, h_x, h_y, n, grid_size_reduction, block_size);
+
+        delete[] h_x; delete[] h_y; delete[] h_A;
+        cudaFree(d_A); cudaFree(d_x); cudaFree(d_y);
+    }
 
     return 0;
 }
