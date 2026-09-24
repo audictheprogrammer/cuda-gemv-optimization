@@ -1,12 +1,10 @@
 # cuda-gemv-optimization
 
-Progressive optimization of a matrix-vector multiplication (GEMV) kernel in raw CUDA,
-from a naive implementation to a warp-level reduction, with correctness verification
-and memory bandwidth profiling using Nsight Compute.
+CUDA GEMV optimization from a naive implementation to a warp-level reduction, with correctness checks, benchmarking, and Nsight Compute profiling.
 
 ## Why this project
 
-During LLM inference, the decode phase generates one token at a time, often turning matrix-matrix multiplications (GEMM) into matrix-vector multiplications (GEMV) with batch size = 1.
+During LLM inference, the decode phase generates one token at a time, which can turn matrix-matrix multiplications (GEMM) into matrix-vector multiplications (GEMV) when the batch size is 1.
 
 GEMV is typically memory-bandwidth bound, making memory access patterns critical for performance.
 
@@ -14,52 +12,86 @@ This project explores this through a progressive optimization of a GEMV CUDA ker
 
 ## Results
 
-Matrix size: 1024×1024, float32, tested on NVIDIA Tesla T4.
+Matrix size: 1024×1024, float32, tested on an NVIDIA Tesla T4 GPU.
 
 | Kernel     | Time (ms) | DRAM throughput (% of peak) | Strategy |
 |------------|-----------|------------------------------|----------|
-| Naive      | 0.338     | 4.79%                        | 1 thread = 1 row, strided memory access |
-| Coalesced  | 1.502     | 0.88%                        | 1 thread = 1 column, atomicAdd on y |
-| Shared     | 0.123     | 44.68%                       | 1 block = 1 row, shared-memory reduction |
-| Reduction  | 0.098     | 61.31%                       | 1 warp = 1 row, warp-level shuffle reduction |
+| Naive      | 0.401     | 4.83%                        | 1 thread = 1 row, strided memory access |
+| Coalesced  | 1.758     | 1.02%                        | 1 thread = 1 column, atomicAdd on y |
+| Shared     | 0.134     | 44.90%                       | 1 block = 1 row, shared-memory reduction |
+| Reduction  | 0.109     | 62.99%                       | 1 warp = 1 row, warp-level shuffle reduction |
 
 Values are averaged over 5 runs on Google Colab (Tesla T4) to smooth out
 run-to-run variance inherent to shared cloud infrastructure.
+
 ## Implementation walkthrough
 
 ### 1. Naive (`gemv_naive.cu`)
 One thread computes one full dot product (one row of A × x).
-Simple, but each thread in a warp reads memory addresses spaced `n` elements apart —
-no coalescing, most of the theoretical memory bandwidth is left unused (4.79%).
+Simple, but each thread in a warp reads memory addresses spaced `n` elements. The lack of coalesced memory results in low DRAM throughput (4.83%).
 
 ### 2. Coalesced (`gemv_coalesced.cu`)
-Flips the strategy: each thread handles one column instead of one row, so threads
-in the same warp read contiguous memory — solving the coalescing problem.
-But this creates a new bottleneck: many threads must now write to the same `y[j]`,
-requiring `atomicAdd` and forcing serialized writes. The result is *worse* than
-naive (0.88%) — proof that fixing one bottleneck can reveal another, and that
-memory access pattern isn't the only thing that matters.
+Flips the strategy: each thread handles one column instead of one row, so threads in the same warp read contiguous memory, solving the coalescing problem. 
+But this creates a new bottleneck: many threads must now write to the same `y[j]`, requiring `atomicAdd` and forcing serialized writes. The result is *worse* than naive (1.02% of peak DRAM throughput).
 
 ### 3. Shared-memory (`gemv_shared.cu`)
 One block computes one full dot product.
 Each thread processes a strided subset of the row and accumulates a partial sum in a register. The partial sums are then written to shared memory and combined using a tree reduction with `__syncthreads()`.
 
-The reduction is much faster than both previous approaches, reaching 44.68% of peak DRAM throughput and reducing kernel time to 0.123 ms.
+This kernel is much faster than both previous approaches, reaching 44.90% of peak DRAM throughput and reducing kernel time to 0.134 ms.
 
 ### 4. Warp-level reduction (`gemv_reduction.cu`)
 Refines the shared-memory approach by assigning one warp (32 threads) to one row.
 Each thread reads a strided subset of the row (coalesced access across the warp), accumulates a partial sum in a register, then all 32 partial sums are combined via `__shfl_down_sync`— a register-to-register exchange within the warp, with no shared memory and no global memory writes until the very end.
 Only lane 0 writes the final result to `y[row]`, eliminating the atomic contention entirely.
 
-Result: 61.31% of peak DRAM throughput, ~3.4x faster than naive and ~15.3x
-faster than the atomicAdd version.
+Result: 62.99% of peak DRAM throughput, ~3.7x faster than naive and ~16.1x faster than the atomicAdd version.
+
+## Scaling behavior
+
+The following results show how the four kernels perform as the matrix size increases.
+
+| n     | Naive (ms) | Coalesced (ms) | Shared (ms) | Reduction (ms) |
+|-------|------------|-----------------|-------------|-----------------|
+| 1024  | 0.401      | 1.758           | 0.134       | 0.109           |
+| 2048  | 0.567      | 2.646           | 0.076       | 0.075           |
+| 4096  | 1.130      | 6.448           | 0.257       | 0.269           |
+| 8192  | 4.202      | 15.716          | 1.009       | 1.025           |
+
+### Why is n=1024 slower than n=2048, despite less work?
+
+n=2048 has 4x more work than n=1024 (n² elements), yet Shared and Reduction both run *faster* at n=2048. Why?
+
+At n=2048, both Shared and Reduction run faster than at n=1024, despite processing four times more elements. One possible explanation is that the larger number of blocks provides more warps to hide memory latency. With fewer warps available, an SM may have fewer ready warps to execute when one warp stalls waiting for memory.
+
+A second, unverified factor could be the small number of blocks. With only 128 blocks for Reduction at n=1024, the work may not be evenly distributed across the GPU's SMs, and the total time may depend on the slowest one. Further profiling would be needed to confirm this.
+
+### Which kernel is actually better?
+| n     | Naive (%BW) | Coalesced (%BW) | Shared (%BW) | Reduction (%BW) |
+|-------|-------------|------------------|--------------|-------------------|
+| 1024  | 4.83        | 1.02             | 44.90        | 62.99             |
+| 2048  | 9.35        | 1.98             | 76.48        | 80.75             |
+| 4096  | 18.75       | 3.78             | 91.86        | 91.37             |
+| 8192  | 21.58       | 5.93             | 96.22        | 96.48             |
+
+| n     | Shared occupancy | Reduction occupancy |
+|-------|-------------------|------------------------|
+| 1024  | 89.6%             | 75.8%                  |
+| 2048  | 92.4%             | 86.0%                  |
+| 4096  | 95.5%             | 94.4%                  |
+| 8192  | 97.8%             | 95.5%                  |
+
+At n=1024, Reduction achieves higher DRAM throughput than Shared (62.99% vs 44.90%) and is also faster (0.109 ms vs 0.134 ms).
+
+The difference comes from their launch configurations: Shared launches `<<<n, 256>>>`, while Reduction launches `<<<n/8, 256>>>`. Reduction uses one warp per row instead of one block per row. This results in lower occupancy (75.8% vs 89.6%), but avoids the shared-memory reduction and its synchronization steps. The lower synchronization overhead may help explain this result, although further profiling would be needed to confirm it.
+
+At larger n, the difference becomes smaller. Occupancy gets closer for both kernels, and Shared's fixed synchronization cost becomes a smaller fraction of the growing workload. At n=8192, both kernels reach around 96% of peak DRAM throughput, and their execution times are very similar.
+
+Overall, within the tested range (n=1024 to n=8192), Reduction has an advantage at small sizes, while the performance difference becomes small at larger sizes.
 
 ## Correctness verification
 
-Each kernel's output is compared against a CPU reference implementation,
-using relative error tolerance (not absolute) to account for floating-point
-summation order differences between CPU and GPU — see `verify_gemv` in
-`common.cuh`.
+Each kernel's output is compared against a CPU reference implementation, using relative error tolerance (rather than an absolute tolerance) to account for floating-point summation order differences between CPU and GPU. See `verify_gemv` in `common.cuh`.
 
 ## Build & run
 
@@ -67,16 +99,15 @@ summation order differences between CPU and GPU — see `verify_gemv` in
 nvcc -arch=sm_XX src/main.cu src/gemv_naive.cu src/gemv_coalesced.cu src/gemv_shared.cu src/gemv_reduction.cu -o gemv_test
 ./gemv_test
 ```
-Replace `sm_XX` with your GPU's compute capability (e.g. `sm_75` for T4, `sm_50` for
-Maxwell-generation cards).
+Replace `sm_XX` with your GPU's compute capability (e.g. `sm_75` for T4, `sm_50` for Maxwell-generation cards).
 
 ## Profiling with Nsight Compute
 
 ```bash
-ncu --metrics dram__throughput.avg.pct_of_peak_sustained_elapsed ./gemv_test
+ncu --metrics dram__throughput.avg.pct_of_peak_sustained_elapsed,sm__warps_active.avg.pct_of_peak_sustained_active ./gemv_test
 ```
 
 ## What I'd explore next
 
-- Larger matrix sizes and a roofline analysis (compute-bound vs memory-bound)
-- Inline PTX for the critical load in the reduction kernel
+- A roofline analysis comparing this memory-bound GEMV against a compute-bound GEMM
+- Further profiling to better understand the performance differences between the Shared and Reduction kernels
